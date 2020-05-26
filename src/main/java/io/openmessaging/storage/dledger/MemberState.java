@@ -91,6 +91,9 @@ public class MemberState {
         }
     }
 
+    /**
+     * 持久化投票轮次的信息
+     */
     private void persistTerm() {
         try {
             Properties properties = new Properties();
@@ -118,6 +121,7 @@ public class MemberState {
 
     public synchronized long nextTerm() {
         PreConditions.check(role == CANDIDATE, DLedgerResponseCode.ILLEGAL_MEMBER_STATE, "%s != %s", role, CANDIDATE);
+        //如果收到已知的最大投票轮次，则将自己当前的轮次更新为最大的轮次
         if (knownMaxTermInGroup > currTerm) {
             currTerm = knownMaxTermInGroup;
         } else {
