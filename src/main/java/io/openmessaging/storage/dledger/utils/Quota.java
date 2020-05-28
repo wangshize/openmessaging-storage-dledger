@@ -49,12 +49,18 @@ public class Quota {
 
     public void sample(int value) {
         long timeMs = System.currentTimeMillis();
+        //timeMs = 1590562199982，
+        // second = timeMs / 1000 = 1590562199,
+        // index = 1590562199 % 5 = 4
         int index = index(timeMs);
         long second = second(timeMs);
+        //timeVec[index] != second 说明已经不是同一个时间窗口
+        //对于这个新的时间窗口重新设置发送大小
         if (timeVec[index] != second) {
             timeVec[index] = second;
             samples[index] = value;
         } else {
+            //时间窗口增加发送大小
             samples[index] += value;
         }
 

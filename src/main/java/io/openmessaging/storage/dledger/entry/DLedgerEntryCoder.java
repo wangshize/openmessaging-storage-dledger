@@ -73,6 +73,7 @@ public class DLedgerEntryCoder {
 
     public static void setPos(ByteBuffer byteBuffer, long pos) {
         byteBuffer.mark();
+        //这里position的位置加了24个字节，是因为前面setIndexTerm这里写入了24个字节
         byteBuffer.position(byteBuffer.position() + DLedgerEntry.POS_OFFSET);
         byteBuffer.putLong(pos);
         byteBuffer.reset();
@@ -87,9 +88,18 @@ public class DLedgerEntryCoder {
         return pos;
     }
 
+    /**
+     * 写之前先mark，记录position的位置，写完之后又reset，将position重置到写之前的位置
+     * 此时position虽然被重置到写之前的位置，但是数据确实是已经写进入了
+     *
+     * 猜测：
+     * 这个类中，之所以所有的方法写数据前后调用mark和reset，是因为position并不一定是从0开始写的，
+     * 可能是此时byteBuffer有多条数据
+     */
     public static void setIndexTerm(ByteBuffer byteBuffer, long index, long term, int magic) {
         byteBuffer.mark();
         byteBuffer.putInt(magic);
+        //这里跳过的四个字节是：条目日志总长度，包含 Header(协议头) + 消息体，占4字节。
         byteBuffer.position(byteBuffer.position() + 4);
         byteBuffer.putLong(index);
         byteBuffer.putLong(term);

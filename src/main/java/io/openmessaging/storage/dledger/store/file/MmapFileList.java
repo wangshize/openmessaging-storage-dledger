@@ -52,6 +52,11 @@ public class MmapFileList {
         this.mappedFileSize = mappedFileSize;
     }
 
+    /**
+     * 校验文件的合法性，
+     * 上一个文件的文件偏移量到当前文件的文件偏移量必须等于文件大小
+     * @return
+     */
     public boolean checkSelf() {
         if (!this.mappedFiles.isEmpty()) {
             Iterator<MmapFile> iterator = mappedFiles.iterator();
@@ -187,12 +192,18 @@ public class MmapFileList {
         return append(data, 0, data.length, useBlank);
     }
 
+    /**
+     * @param len 需要申请的长度。
+     * @return
+     */
     public long preAppend(int len) {
         return preAppend(len, true);
     }
 
     public long preAppend(int len, boolean useBlank) {
+        //获取最后一个文件，因为追加日志是顺序写的，所以当前正在写的日志文件一定是最后一个
         MmapFile mappedFile = getLastMappedFile();
+        //如果文件不存在或者写满了，新建一个文件
         if (null == mappedFile || mappedFile.isFull()) {
             mappedFile = getLastMappedFile(0);
         }
@@ -201,14 +212,17 @@ public class MmapFileList {
             return -1;
         }
         int blank = useBlank ? MIN_BLANK_LEN : 0;
+        //len：需要申请的长度，如果总的需要申请的长度超过了当前文件可以写的长度
         if (len + blank > mappedFile.getFileSize() - mappedFile.getWrotePosition()) {
             if (blank < MIN_BLANK_LEN) {
                 logger.error("Blank {} should ge {}", blank, MIN_BLANK_LEN);
                 return -1;
             } else {
+                //申请一个当前文件剩余字节的大小的bytebuffer。
                 ByteBuffer byteBuffer = ByteBuffer.allocate(mappedFile.getFileSize() - mappedFile.getWrotePosition());
                 byteBuffer.putInt(BLANK_MAGIC_CODE);
                 byteBuffer.putInt(mappedFile.getFileSize() - mappedFile.getWrotePosition());
+                //写入空数据，为了填满这个日志文件
                 if (mappedFile.appendMessage(byteBuffer.array())) {
                     //need to set the wrote position
                     mappedFile.setWrotePosition(mappedFile.getFileSize());
@@ -216,6 +230,7 @@ public class MmapFileList {
                     logger.error("Append blank error for {}", storePath);
                     return -1;
                 }
+                //上一个文件被空数据填满了，自然要新建一个新的文件
                 mappedFile = getLastMappedFile(0);
                 if (null == mappedFile) {
                     logger.error("Create mapped file for {}", storePath);
@@ -223,15 +238,24 @@ public class MmapFileList {
                 }
             }
         }
+        //直接返回物理偏移量
         return mappedFile.getFileFromOffset() + mappedFile.getWrotePosition();
 
     }
 
+    /**
+     * @param data 待写入的数据，即待追加的日志。
+     * @param pos 从 data 字节数组哪个位置开始读取。
+     * @param len 待写入的字节数量。
+     * @param useBlank
+     * @return
+     */
     public long append(byte[] data, int pos, int len, boolean useBlank) {
         if (preAppend(len, useBlank) == -1) {
             return -1;
         }
         MmapFile mappedFile = getLastMappedFile();
+        //写指针的位置，从这个位置开始写入数据
         long currPosition = mappedFile.getFileFromOffset() + mappedFile.getWrotePosition();
         if (!mappedFile.appendMessage(data, pos, len)) {
             logger.error("Append error for {}", storePath);
@@ -295,6 +319,7 @@ public class MmapFileList {
                     return false;
                 }
                 try {
+                    //以mmap技术打开文件，将日志文件内容映射到内存
                     MmapFile mappedFile = new DefaultMmapFile(file.getPath(), mappedFileSize);
 
                     mappedFile.setWrotePosition(this.mappedFileSize);

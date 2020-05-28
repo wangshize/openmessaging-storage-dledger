@@ -61,8 +61,14 @@ public class DLedgerServer implements DLedgerProtocolHander {
     private MemberState memberState;
     private DLedgerConfig dLedgerConfig;
 
+    /**
+     * 日志存储组件
+     */
     private DLedgerStore dLedgerStore;
     private DLedgerRpcService dLedgerRpcService;
+    /**
+     * DLedger 日志转发与处理核心类
+     */
     private DLedgerEntryPusher dLedgerEntryPusher;
     private DLedgerLeaderElector dLedgerLeaderElector;
 
@@ -145,9 +151,9 @@ public class DLedgerServer implements DLedgerProtocolHander {
 
     /**
      * Handle the append requests:
-     * 1.append the entry to local store
-     * 2.submit the future to entry pusher and wait the quorum ack
-     * 3.if the pending requests are full, then reject it immediately
+     * 1.append the entry to local store 追加到本地存储
+     * 2.submit the future to entry pusher and wait the quorum ack 等待大多数节点ack
+     * 3.if the pending requests are full, then reject it immediately 如果等待响应的请求满了，立即拒绝
      *
      * @param request
      * @return

@@ -47,24 +47,68 @@ public class DLedgerMmapFileStore extends DLedgerStore {
 
     private static Logger logger = LoggerFactory.getLogger(DLedgerMmapFileStore.class);
     public List<AppendHook> appendHooks = new ArrayList<>();
+    /**
+     * 当前节点最小的日志序号，默认为 -1。
+     */
     private long ledgerBeginIndex = -1;
+    /**
+     * 当前节点最大的日志序号，默认为 -1。
+     */
     private long ledgerEndIndex = -1;
+    /**
+     * 主节点已提交的日志索引。
+     */
     private long committedIndex = -1;
     private long committedPos = -1;
+    /**
+     * 当前最大的投票轮次。
+     */
     private long ledgerEndTerm;
     private DLedgerConfig dLedgerConfig;
     private MemberState memberState;
+    /**
+     * 日志文件(数据文件)的内存映射Queue。（可对标 RocketMQ MappedFIleQueue )。
+     */
     private MmapFileList dataFileList;
+    /**
+     * 索引文件的内存映射文件集合。（可对标 RocketMQ MappedFIleQueue )。
+     */
     private MmapFileList indexFileList;
+    /**
+     * 本地线程变量，用来缓存数据索引ByteBuffer。
+     * 也就是需要写入日志的数据先写入到这里
+     */
     private ThreadLocal<ByteBuffer> localEntryBuffer;
+    /**
+     * 本地线程变量，用来缓存索引ByteBuffer。
+     * 也就是需要写入日志的索引数据先写入到这里
+     */
     private ThreadLocal<ByteBuffer> localIndexBuffer;
+    /**
+     * 数据文件刷盘线程。
+     */
     private FlushDataService flushDataService;
+    /**
+     * 清除过期日志文件线程。
+     */
     private CleanSpaceService cleanSpaceService;
+    /**
+     * 磁盘是否已满。
+     */
     private boolean isDiskFull = false;
 
+    /**
+     * 上一次检测点（时间戳）。
+     */
     private long lastCheckPointTimeMs = System.currentTimeMillis();
 
+    /**
+     * 是否已经加载，主要用来避免重复加载(初始化)日志文件。
+     */
     private AtomicBoolean hasLoaded = new AtomicBoolean(false);
+    /**
+     * 是否已恢复。
+     */
     private AtomicBoolean hasRecovered = new AtomicBoolean(false);
 
     public DLedgerMmapFileStore(DLedgerConfig dLedgerConfig, MemberState memberState) {
@@ -110,6 +154,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
         if (!hasLoaded.compareAndSet(false, true)) {
             return;
         }
+        //加载数据文件和索引文件，任一失败就退出进程
         if (!this.dataFileList.load() || !this.indexFileList.load()) {
             logger.error("Load file failed, this usually indicates fatal error, you should check it manually");
             System.exit(-1);
@@ -129,6 +174,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             return;
         }
         MmapFile lastMappedFile = dataFileList.getLastMappedFile();
+        //从倒数第三个索引开始恢复
         int index = mappedFiles.size() - 3;
         if (index < 0) {
             index = 0;
@@ -326,7 +372,11 @@ public class DLedgerMmapFileStore extends DLedgerStore {
         PreConditions.check(!isDiskFull, DLedgerResponseCode.DISK_FULL);
         ByteBuffer dataBuffer = localEntryBuffer.get();
         ByteBuffer indexBuffer = localIndexBuffer.get();
+        //想数据写入到缓冲区，每次最大只能4m，这里写完之后又flip掉了，
+        // 此时limit = position（假设是 10000）；position = 0
+        //但是条目日志内容已经存在于dataBuffer中了
         DLedgerEntryCoder.encode(entry, dataBuffer);
+        //limit - position，也就是日志数据长度
         int entrySize = dataBuffer.remaining();
         synchronized (memberState) {
             PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER, null);
@@ -335,7 +385,9 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             entry.setIndex(nextIndex);
             entry.setTerm(memberState.currTerm());
             entry.setMagic(CURRENT_MAGIC);
+            //写完之后又reset，此时limit = 10000； position = mark = 0；
             DLedgerEntryCoder.setIndexTerm(dataBuffer, nextIndex, memberState.currTerm(), CURRENT_MAGIC);
+            //计算这条新消息的起始偏移量  在dataFileList这个逻辑文件中
             long prePos = dataFileList.preAppend(dataBuffer.remaining());
             entry.setPos(prePos);
             PreConditions.check(prePos != -1, DLedgerResponseCode.DISK_ERROR, null);
@@ -343,15 +395,19 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             for (AppendHook writeHook : appendHooks) {
                 writeHook.doHook(entry, dataBuffer.slice(), DLedgerEntry.BODY_OFFSET);
             }
+            //吧dataBuffer的数据追加到文件中，
             long dataPos = dataFileList.append(dataBuffer.array(), 0, dataBuffer.remaining());
             PreConditions.check(dataPos != -1, DLedgerResponseCode.DISK_ERROR, null);
             PreConditions.check(dataPos == prePos, DLedgerResponseCode.DISK_ERROR, null);
+            //构建条目索引并将索引数据追加到 pagecache。
             DLedgerEntryCoder.encodeIndex(dataPos, entrySize, CURRENT_MAGIC, nextIndex, memberState.currTerm(), indexBuffer);
             long indexPos = indexFileList.append(indexBuffer.array(), 0, indexBuffer.remaining(), false);
             PreConditions.check(indexPos == entry.getIndex() * INDEX_UNIT_SIZE, DLedgerResponseCode.DISK_ERROR, null);
             if (logger.isDebugEnabled()) {
                 logger.info("[{}] Append as Leader {} {}", memberState.getSelfId(), entry.getIndex(), entry.getBody().length);
             }
+            //ledgerEndeIndex 加一（下一个条目）的序号。
+            // 并设置 leader 节点的状态机的 ledgerEndIndex 与 ledgerEndTerm。
             ledgerEndIndex++;
             ledgerEndTerm = memberState.currTerm();
             if (ledgerBeginIndex == -1) {
@@ -556,6 +612,8 @@ public class DLedgerMmapFileStore extends DLedgerStore {
         }
         DLedgerEntry dLedgerEntry = get(newCommittedIndex);
         PreConditions.check(dLedgerEntry != null, DLedgerResponseCode.DISK_ERROR);
+        //更新 commitedIndex、committedPos 两个指针，DledgerStore会定时将已提交指针刷入 checkpoint 文件，
+        // 达到持久化 commitedIndex 指针的目的。
         this.committedIndex = newCommittedIndex;
         this.committedPos = dLedgerEntry.getPos() + dLedgerEntry.getSize();
     }

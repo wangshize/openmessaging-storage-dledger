@@ -179,6 +179,7 @@ public class DefaultMmapFile extends ReferenceResource implements MmapFile {
      */
     @Override
     public boolean appendMessage(final byte[] data, final int offset, final int length) {
+        //当前mmap文件啊的写指针
         int currentPos = this.wrotePosition.get();
 
         if ((currentPos + length) <= this.fileSize) {
